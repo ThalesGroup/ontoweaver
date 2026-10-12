@@ -3,6 +3,7 @@
 import logging
 import abc
 import re
+import pandas as pd
 from typing import override
 from abc import ABCMeta as ABSTRACT, abstractmethod
 
@@ -99,19 +100,13 @@ class SimpleLabelMaker(LabelMaker):
 
 class MultiTypeLabelMakerInterface(LabelMaker, metaclass = ABSTRACT):
 
-    @abstractmethod
-    def get_value_from(self, value: str, row: list) -> str:
-        raise NotImplementedError
-
-    def __call__(self, validate, returned_value, multi_type_dict = None, branching_properties = None, row = None):
-        value = str(returned_value)
-        value_to_match = self.get_value_from(value, row)
-        if validate(value):
+    def __call__(self, validate, transformed_value, multi_type_dict = None, branching_properties = None, row = None):
+        if validate(transformed_value):
             if multi_type_dict:
                 has_match = False
                 for pattern, types in multi_type_dict.items():
                     # Branching is performed on the regex patterns.
-                    if re.search(pattern, value_to_match):
+                    if self.match(pattern, transformed_value, row):
                         has_match = True
                         if branching_properties:
                             properties_of = branching_properties.get(types["to_object"].__name__, {})
@@ -119,7 +114,7 @@ class MultiTypeLabelMakerInterface(LabelMaker, metaclass = ABSTRACT):
                             properties_of = {}
                         assert types["to_object"]
                         return ReturnCreate(
-                            value,
+                            transformed_value,
                             types["via_relation"],
                             types["to_object"],
                             properties_of,
@@ -127,7 +122,7 @@ class MultiTypeLabelMakerInterface(LabelMaker, metaclass = ABSTRACT):
                             types["reverse_relation"]
                         )
                 if not has_match:
-                    self.delay_warning(f"No type pattern matching value: `{value_to_match}` during extraction in a match section. I'll skip the related cell values.")
+                    self.delay_warning(f"No type pattern matching value: `{transformed_value}` during extraction in a match section. I'll skip the related cell values.")
             else:
                 # No multi-type dictionary. The transformer returns only the extracted value of the cell. Used for properties.
                 return ReturnCreate(value)
@@ -135,7 +130,10 @@ class MultiTypeLabelMakerInterface(LabelMaker, metaclass = ABSTRACT):
             # Validation failed, return empty object with None values.
             return ReturnCreate()
 
-
+    @abstractmethod
+    def match(self, pattern: str, transformed_value: str, row) -> bool:
+        raise NotImplementedError
+        
 class MultiTypeLabelMaker(MultiTypeLabelMakerInterface):
     """
     The class is used when the transformer has type branching logic based on the value that will become the ID of the element.
@@ -144,8 +142,11 @@ class MultiTypeLabelMaker(MultiTypeLabelMakerInterface):
         super().__init__(raise_errors)
 
     @override
-    def get_value_from(self, value: str, row: list) -> str:
-        return value
+    def match(self, pattern, transformed_value, row):
+        if re.search(pattern, transformed_value):
+            return True
+        else: return False
+
 
 
 class MultiTypeOnColumnLabelMaker(MultiTypeLabelMakerInterface):
@@ -158,6 +159,22 @@ class MultiTypeOnColumnLabelMaker(MultiTypeLabelMakerInterface):
         super().__init__(raise_errors)
 
     @override
-    def get_value_from(self, value: str, row: list) -> str:
-        return str(row[self.match_type_from_column])
+    def match(self, pattern, transformed_value, row):
+        value_to_match =  str(row[self.match_type_from_column])
+        if re.search(pattern, value_to_match):
+            return True
+        else: return False
+    
+
+class MultiTypeFromQueryLabelMaker(MultiTypeLabelMakerInterface):
+    """
+    The class is used when the transformer has type branching logic based on the value that will become the ID of the element.
+    """
+    def __init__(self,raise_errors: bool = True):
+        super().__init__(raise_errors)
+
+    @override
+    def match(self, pattern, transformed_value, row):
+        ans = row.to_frame().transpose().query(pattern)
+        return not ans.empty
 
